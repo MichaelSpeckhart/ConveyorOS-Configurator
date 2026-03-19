@@ -1,0 +1,8 @@
+"ADDITEM",".DCDC03-090374","03-090374","3","100","0.00","DC3407","Sabina","Tacitus","801-208-2200","AA90664756","Shirts-Regular Hang - Black,Solid","2025-04-18T14:27:49","2025-04-22T17:00:00","Do not crease"
+"ADDITEM",".DCDC03-090374","03-090374","3","100","0.00","DC3407","Sabina","Tacitus","801-208-2200","AA90664757","Pants-Regular Hang - Navy,Solid","2025-04-18T14:27:49","2025-04-22T17:00:00","Do not crease"
+"ADDITEM",".DCDC03-090374","03-090374","3","100","0.00","DC3407","Sabina","Tacitus","801-208-2200","AA90664758","Jacket-Regular Hang - Black,Stripe","2025-04-18T14:27:49","2025-04-22T17:00:00","Do not crease"
+"ADDITEM",".DCDC03-090375","03-090375","2","50","12.50","DC1122","John","Smith","801-555-0191","BB10023401","Dress Shirt - White","2025-04-18T15:10:00","2025-04-21T17:00:00",""
+"ADDITEM",".DCDC03-090375","03-090375","2","50","12.50","DC1122","John","Smith","801-555-0191","BB10023402","Tie - Red,Silk","2025-04-18T15:10:00","2025-04-21T17:00:00",""
+"ADDITEM",".DCDC03-090376","03-090376","1","100","8.75","DC0089","Maria","Gonzalez","801-867-5309","CC55512301","Wedding Dress - White,Lace","2025-04-18T16:00:00","2025-04-25T17:00:00","Handle with extreme care - do not fold"
+"DELITEM",".DCDC03-090370","AA90001100"
+"DELINV",".DCDC03-090369","01"
