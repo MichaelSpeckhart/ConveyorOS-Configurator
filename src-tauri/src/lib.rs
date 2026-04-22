@@ -442,48 +442,77 @@ fn test_print_ticket(port_path: String, template: TicketTemplateConfig) -> Resul
     if port_path.is_empty() {
         return Err("No port selected. Select a port or printer queue from the scan results, or type one in manually.".to_string());
     }
+
+    println!("Port Path is: {port_path}");
     let receipt = build_test_receipt(&template);
     _send_escpos(&port_path, &receipt)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    if port_path.starts_with("/dev/") {
-        // USB-serial adapter or direct device node
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(port_path)
-            .map_err(|e| format!("Cannot open {port_path}: {e}"))?;
-        file.write_all(data).map_err(|e| format!("Write error: {e}"))?;
-        file.flush().map_err(|e| format!("Flush error: {e}"))?;
-    } else {
-        // CUPS queue name — write ESC/POS to a temp file and submit via lp -o raw
-        use std::process::Command;
-        let tmp = std::env::temp_dir().join("conveyoros_escpos.bin");
-        std::fs::write(&tmp, data).map_err(|e| format!("Temp file error: {e}"))?;
-        let out = Command::new("lp")
-            .args(["-d", port_path, "-o", "raw", tmp.to_str().unwrap()])
-            .output()
-            .map_err(|e| format!("lp command failed: {e}"))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("lp error: {stderr}"));
-        }
+fn parse_vid_pid(s: &str) -> Result<(u16, u16), String> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(format!("Expected VID:PID format (e.g. 04b8:0202), got: {s}"));
     }
-    Ok(())
+    let vid = u16::from_str_radix(parts[0].trim(), 16)
+        .map_err(|_| format!("Invalid vendor ID: {}", parts[0]))?;
+    let pid = u16::from_str_radix(parts[1].trim(), 16)
+        .map_err(|_| format!("Invalid product ID: {}", parts[1]))?;
+    Ok((vid, pid))
 }
 
-#[cfg(target_os = "windows")]
 fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(port_path)
-        .map_err(|e| format!("Cannot open {port_path}: {e}"))?;
-    file.write_all(data).map_err(|e| format!("Write error: {e}"))?;
-    file.flush().map_err(|e| format!("Flush error: {e}"))?;
-    Ok(())
+    use escpos_rs::{Printer, PrinterProfile};
+    let (vid, pid) = parse_vid_pid(port_path)?;
+    let profile = PrinterProfile::usb_builder(vid, pid).build();
+    let printer = Printer::new(profile)
+        .map_err(|e| format!("Failed to connect to printer: {e}"))?
+        .ok_or_else(|| format!("Printer {port_path} not found on USB. Make sure it is connected and powered on."))?;
+    printer.raw(data).map_err(|e| format!("Failed to send data to printer: {e}"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EscposPrinterInfo {
+    path: String,
+    description: String,
+}
+
+fn vendor_name(vid: u16) -> &'static str {
+    match vid {
+        0x04b8 => "Epson",
+        0x0519 => "Star Micronics",
+        0x1504 => "Bixolon",
+        0x1d90 => "Citizen",
+        0x0dd4 => "Custom",
+        0x0fe6 => "ICS",
+        _ => "",
+    }
+}
+
+#[tauri::command]
+fn discover_escpos_printers() -> Result<Vec<EscposPrinterInfo>, String> {
+    let devices = rusb::devices().map_err(|e| format!("USB enumeration error: {e}"))?;
+    let mut printers = Vec::new();
+    for device in devices.iter() {
+        let Ok(desc) = device.device_descriptor() else { continue };
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
+        let is_printer_class = desc.class_code() == 7;
+        let name = vendor_name(vid);
+        if !is_printer_class && name.is_empty() {
+            continue;
+        }
+        let description = if name.is_empty() {
+            format!("USB Printer {:04x}:{:04x}", vid, pid)
+        } else {
+            format!("{} ({:04x}:{:04x})", name, vid, pid)
+        };
+        printers.push(EscposPrinterInfo {
+            path: format!("{:04x}:{:04x}", vid, pid),
+            description,
+        });
+    }
+    Ok(printers)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -499,6 +528,7 @@ pub fn run() {
             get_config_path,
             discover_printers,
             discover_usb_ports,
+            discover_escpos_printers,
             apply_to_oas,
             test_print_ticket,
         ])
