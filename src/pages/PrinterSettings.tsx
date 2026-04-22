@@ -11,6 +11,7 @@ import {
   ChevronUp,
   ChevronDown,
   Barcode,
+  PrinterCheck,
 } from "lucide-react";
 import { ConfiguratorConfig, PrinterConfig, TicketField, TicketTemplateConfig } from "../types/config";
 
@@ -432,6 +433,7 @@ export default function PrinterSettings({ config, onChange }: Props) {
         <TicketTemplateEditor
           template={printer.ticketTemplate}
           posSystem={config.posSystem}
+          portPath={printer.portPath}
           onChange={(ticketTemplate) => updatePrinter({ ticketTemplate })}
         />
       )}
@@ -461,12 +463,30 @@ const FIELDS_UNAVAILABLE_FOR: Record<string, Set<string>> = {
 function TicketTemplateEditor({
   template,
   posSystem,
+  portPath,
   onChange,
 }: {
   template: TicketTemplateConfig;
   posSystem: string;
+  portPath: string;
   onChange: (t: TicketTemplateConfig) => void;
 }) {
+  const [testPrinting, setTestPrinting] = useState(false);
+  const [testPrintResult, setTestPrintResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  async function handleTestPrint() {
+    setTestPrinting(true);
+    setTestPrintResult(null);
+    try {
+      await invoke("test_print_ticket", { portPath, template });
+      setTestPrintResult({ ok: true, msg: "Test print sent successfully." });
+    } catch (err) {
+      setTestPrintResult({ ok: false, msg: String(err) });
+    } finally {
+      setTestPrinting(false);
+    }
+  }
+
   const unavailable = FIELDS_UNAVAILABLE_FOR[posSystem] ?? new Set<string>();
   function updateField(id: string, updates: Partial<TicketField>) {
     const fields = template.fields.map((f) => (f.id === id ? { ...f, ...updates } : f));
@@ -488,12 +508,30 @@ function TicketTemplateEditor({
 
   return (
     <div className="mt-2 border-t border-[#ddd8d0] pt-8">
-      <h3 className="text-sm font-bold text-slate-600 mb-1">
-        Ticket Layout
-      </h3>
-      <p className="text-xs text-gray-400 mb-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-bold text-slate-600">Ticket Layout</h3>
+        <button
+          onClick={handleTestPrint}
+          disabled={testPrinting || !portPath}
+          title={!portPath ? "Select a USB port first" : "Send a test print to the printer"}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          <PrinterCheck size={14} className={testPrinting ? "animate-pulse" : ""} />
+          {testPrinting ? "Printing…" : "Test Print"}
+        </button>
+      </div>
+      <p className="text-xs text-gray-400 mb-3">
         Configure what prints on each ticket. Drag fields up/down to reorder.
       </p>
+      {testPrintResult && (
+        <div className={`mb-4 px-4 py-2.5 rounded-lg border text-sm ${
+          testPrintResult.ok
+            ? "bg-green-50 border-green-200 text-green-700"
+            : "bg-red-50 border-red-200 text-red-700"
+        }`}>
+          {testPrintResult.msg}
+        </div>
+      )}
 
       <div className="flex gap-6 items-start">
         {/* Editor column */}

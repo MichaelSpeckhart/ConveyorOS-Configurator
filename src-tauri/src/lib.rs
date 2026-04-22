@@ -1,5 +1,5 @@
 mod config;
-use config::ConfiguratorConfig;
+use config::{ConfiguratorConfig, TicketTemplateConfig};
 use serde::Serialize;
 use std::fs;
 use tauri::Manager;
@@ -346,6 +346,103 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
     Ok(ports)
 }
 
+const SAMPLE_VALUES: &[(&str, &str)] = &[
+    ("ticketNumber",       "000014684"),
+    ("customerIdentifier", "01040363"),
+    ("customerName",       "John Smith"),
+    ("numItems",           "4 items"),
+    ("dropoffDate",        "04/03/2026"),
+    ("pickupDate",         "04/10/2026"),
+    ("comments",           "Handle with care"),
+    ("itemList",           "T1476237  Ld Bag\nT2003925  LD Shirt Hanger\nT1428942  LD Shirt Hanger"),
+];
+
+fn build_test_receipt(template: &TicketTemplateConfig) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+
+    // Initialize
+    buf.extend_from_slice(&[0x1B, 0x40]);
+    buf.push(0x0A);
+
+    // Center, bold, double-height for header
+    buf.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01, 0x1D, 0x21, 0x10]);
+    if !template.header_text.is_empty() {
+        buf.extend_from_slice(template.header_text.as_bytes());
+        buf.push(0x0A);
+    }
+    // Reset size and bold
+    buf.extend_from_slice(&[0x1D, 0x21, 0x00, 0x1B, 0x45, 0x00]);
+    buf.extend_from_slice(b"*** TEST PRINT ***\n");
+    buf.extend_from_slice(b"--------------------------------\n");
+
+    // Left-align for fields
+    buf.extend_from_slice(&[0x1B, 0x61, 0x00]);
+
+    for field in &template.fields {
+        if !field.enabled {
+            continue;
+        }
+        let value = SAMPLE_VALUES.iter()
+            .find(|(id, _)| *id == field.id)
+            .map(|(_, v)| *v)
+            .unwrap_or("");
+        let show_barcode = field.show_barcode.unwrap_or(false);
+
+        if field.id == "itemList" {
+            buf.extend_from_slice(b"-- Garments --\n");
+            for line in value.split('\n') {
+                buf.extend_from_slice(line.as_bytes());
+                buf.push(0x0A);
+            }
+        } else {
+            let line = format!("{}: {}\n", field.label, value);
+            buf.extend_from_slice(line.as_bytes());
+            if show_barcode {
+                // Center barcode, HRI below, height 60, width 2
+                buf.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1D, 0x48, 0x02, 0x1D, 0x68, 60, 0x1D, 0x77, 2]);
+                // Code128: GS k m n data  (m=73 = Code128)
+                let code128_data = format!("{{B{}", value);
+                let data_bytes = code128_data.as_bytes();
+                buf.extend_from_slice(&[0x1D, 0x6B, 73, data_bytes.len() as u8]);
+                buf.extend_from_slice(data_bytes);
+                buf.push(0x0A);
+                buf.extend_from_slice(&[0x1B, 0x61, 0x00]);
+            }
+        }
+    }
+
+    buf.extend_from_slice(b"--------------------------------\n");
+
+    if !template.footer_text.is_empty() {
+        buf.extend_from_slice(&[0x1B, 0x61, 0x01]);
+        buf.extend_from_slice(template.footer_text.as_bytes());
+        buf.push(0x0A);
+        buf.extend_from_slice(&[0x1B, 0x61, 0x00]);
+    }
+
+    // Feed 4 lines then partial cut
+    buf.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A]);
+    buf.extend_from_slice(&[0x1D, 0x56, 0x42, 0x03]);
+
+    buf
+}
+
+#[tauri::command]
+fn test_print_ticket(port_path: String, template: TicketTemplateConfig) -> Result<(), String> {
+    if port_path.is_empty() {
+        return Err("No USB port selected. Please select or enter a port path first.".to_string());
+    }
+    let receipt = build_test_receipt(&template);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&port_path)
+        .map_err(|e| format!("Failed to open {port_path}: {e}"))?;
+    file.write_all(&receipt).map_err(|e| format!("Print error: {e}"))?;
+    file.flush().map_err(|e| format!("Flush error: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -360,6 +457,7 @@ pub fn run() {
             discover_printers,
             discover_usb_ports,
             apply_to_oas,
+            test_print_ticket,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
