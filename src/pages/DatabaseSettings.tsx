@@ -26,7 +26,7 @@ function Field({ label, hint, value, type = "text", placeholder, onChange }: Fie
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+        className="w-full border border-[#ddd8d0] rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:border-navy focus:ring-1 focus:ring-[rgba(30,61,79,0.12)]"
       />
     </div>
   );
@@ -47,7 +47,7 @@ export default function DatabaseSettings({ config, onChange }: Props) {
         </p>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-5">
+      <div className="bg-white border border-[#ddd8d0] rounded-xl p-6 space-y-5">
         <div className="grid grid-cols-2 gap-5">
           <Field
             label="Host"

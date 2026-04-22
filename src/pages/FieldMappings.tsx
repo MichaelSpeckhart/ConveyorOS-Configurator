@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, RotateCcw, Info, Database } from "lucide-react";
-import { ConfiguratorConfig, FieldMappings as FieldMappingsType, defaultFieldMappings } from "../types/config";
+import { Upload, RotateCcw, Info, Database, AlertTriangle } from "lucide-react";
+import { ConfiguratorConfig, FieldMappings as FieldMappingsType, getDefaultFieldMappings } from "../types/config";
 
 interface Props {
   config: ConfiguratorConfig;
@@ -58,8 +58,13 @@ export default function FieldMappings({ config, onChange }: Props) {
   }
 
   function resetToDefaults() {
-    onChange({ fieldMappings: { ...defaultFieldMappings } });
+    onChange({ fieldMappings: getDefaultFieldMappings(config.posSystem) });
   }
+
+  const isWinCleaners = config.posSystem === "wincleaners";
+  const visibleRows = FIELD_ROWS.filter((row) =>
+    !(isWinCleaners && (row.key === "customerFirstName" || row.key === "customerLastName" || row.key === "customerPhone"))
+  );
 
   const previewAtCol = (col: number) => {
     if (!csvLoaded || csvPreview.length === 0) return null;
@@ -82,19 +87,32 @@ export default function FieldMappings({ config, onChange }: Props) {
         <div className="flex items-center gap-3 mb-6">
           <button
             onClick={loadSampleCsv}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 hover:border-blue-400 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-[#ddd8d0] hover:border-blue-400 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
           >
             <Upload size={15} />
             Load sample file to preview columns
           </button>
           <button
             onClick={resetToDefaults}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 hover:border-orange-400 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-[#ddd8d0] hover:border-orange-400 text-slate-700 text-sm font-medium rounded-lg transition-colors cursor-pointer"
           >
             <RotateCcw size={15} />
-            Reset to SPOT defaults
+            Reset to defaults
           </button>
         </div>
+
+        {isWinCleaners && (
+          <div className="mb-5 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+            <AlertTriangle size={14} className="text-amber-600 mt-0.5 shrink-0" />
+            <p className="text-xs text-amber-800">
+              <strong>WinCleaners two-row format:</strong> Column mappings apply to{" "}
+              <span className="font-mono">GARMENT_CREATE</span> rows. Pick-up date
+              lives in <span className="font-mono">TICKET_CREATE</span> col 3 and
+              requires a cross-reference by invoice number — OAS handles this
+              automatically.
+            </p>
+          </div>
+        )}
 
         {csvLoaded && (
           <div className="mb-5 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-2">
@@ -107,21 +125,21 @@ export default function FieldMappings({ config, onChange }: Props) {
         )}
 
         {/* Field table */}
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[1fr_120px] text-xs font-semibold text-slate-500 uppercase tracking-wide bg-gray-50 border-b border-gray-200 px-5 py-3">
+        <div className="bg-white border border-[#ddd8d0] rounded-xl overflow-hidden">
+          <div className="grid grid-cols-[1fr_120px] text-xs font-semibold text-slate-500 bg-surface border-b border-[#ddd8d0] px-5 py-3">
             <span>Field</span>
             <span className="text-center">Column #</span>
           </div>
 
-          {FIELD_ROWS.map((row, i) => {
+          {visibleRows.map((row, i) => {
             const colValue = config.fieldMappings[row.key];
-            const preview = previewAtCol(colValue);
+            const preview = colValue !== undefined ? previewAtCol(colValue) : null;
 
             return (
               <div
                 key={row.key}
                 className={`grid grid-cols-[1fr_120px] items-center px-5 py-3.5 ${
-                  i < FIELD_ROWS.length - 1 ? "border-b border-gray-100" : ""
+                  i < visibleRows.length - 1 ? "border-b border-[#f0ede8]" : ""
                 }`}
               >
                 <div>
@@ -133,10 +151,16 @@ export default function FieldMappings({ config, onChange }: Props) {
                       {row.description}
                     </p>
                   )}
-                  {preview !== null && (
-                    <p className="text-xs text-slate-400 mt-1 font-mono">
-                      Preview: <span className="text-slate-600">{preview}</span>
+                  {isWinCleaners && row.key === "pickupDate" ? (
+                    <p className="text-xs text-amber-600 mt-0.5">
+                      From TICKET_CREATE col 3 — resolved by invoice #
                     </p>
+                  ) : (
+                    preview !== null && (
+                      <p className="text-xs text-slate-400 mt-1 font-mono">
+                        Preview: <span className="text-slate-600">{preview}</span>
+                      </p>
+                    )
                   )}
                 </div>
                 <div className="flex justify-center">
@@ -144,11 +168,11 @@ export default function FieldMappings({ config, onChange }: Props) {
                     type="number"
                     min={0}
                     max={99}
-                    value={colValue}
+                    value={colValue ?? 0}
                     onChange={(e) =>
                       updateMapping(row.key, parseInt(e.target.value) || 0)
                     }
-                    className="w-16 text-center border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+                    className="w-16 text-center border border-[#ddd8d0] rounded-lg px-2 py-1.5 text-sm text-slate-800 focus:outline-none focus:border-navy focus:ring-1 focus:ring-[rgba(30,61,79,0.12)]"
                   />
                 </div>
               </div>
@@ -180,9 +204,11 @@ export default function FieldMappings({ config, onChange }: Props) {
               title="customers"
               rows={[
                 { col: "customer_identifier", value: csvPreview[config.fieldMappings.customerIdentifier] },
-                { col: "first_name", value: csvPreview[config.fieldMappings.customerFirstName] },
-                { col: "last_name", value: csvPreview[config.fieldMappings.customerLastName] },
-                { col: "phone_number", value: csvPreview[config.fieldMappings.customerPhone] },
+                ...(!isWinCleaners ? [
+                  { col: "first_name", value: csvPreview[config.fieldMappings.customerFirstName ?? 0] },
+                  { col: "last_name", value: csvPreview[config.fieldMappings.customerLastName ?? 0] },
+                  { col: "phone_number", value: csvPreview[config.fieldMappings.customerPhone ?? 0] },
+                ] : []),
               ]}
             />
             <DbTablePreview
@@ -192,11 +218,13 @@ export default function FieldMappings({ config, onChange }: Props) {
                 { col: "display_invoice_number", value: csvPreview[config.fieldMappings.displayInvoiceNumber] },
                 { col: "number_of_items", value: csvPreview[config.fieldMappings.numItems] },
                 { col: "customer_identifier", value: csvPreview[config.fieldMappings.customerIdentifier] },
-                { col: "customer_first_name", value: csvPreview[config.fieldMappings.customerFirstName] },
-                { col: "customer_last_name", value: csvPreview[config.fieldMappings.customerLastName] },
-                { col: "customer_phone_number", value: csvPreview[config.fieldMappings.customerPhone] },
+                ...(!isWinCleaners ? [
+                  { col: "customer_first_name", value: csvPreview[config.fieldMappings.customerFirstName ?? 0] },
+                  { col: "customer_last_name", value: csvPreview[config.fieldMappings.customerLastName ?? 0] },
+                  { col: "customer_phone_number", value: csvPreview[config.fieldMappings.customerPhone ?? 0] },
+                ] : []),
                 { col: "invoice_dropoff_date", value: csvPreview[config.fieldMappings.dropoffDate] },
-                { col: "invoice_pickup_date", value: csvPreview[config.fieldMappings.pickupDate] },
+                { col: "invoice_pickup_date", value: isWinCleaners ? "(from TICKET_CREATE)" : csvPreview[config.fieldMappings.pickupDate] },
               ]}
             />
             <DbTablePreview
@@ -207,7 +235,7 @@ export default function FieldMappings({ config, onChange }: Props) {
                 { col: "item_id", value: csvPreview[config.fieldMappings.itemId] },
                 { col: "item_description", value: csvPreview[config.fieldMappings.itemDescription] },
                 { col: "invoice_dropoff_date", value: csvPreview[config.fieldMappings.dropoffDate] },
-                { col: "invoice_pickup_date", value: csvPreview[config.fieldMappings.pickupDate] },
+                { col: "invoice_pickup_date", value: isWinCleaners ? "(from TICKET_CREATE)" : csvPreview[config.fieldMappings.pickupDate] },
                 { col: "invoice_comments", value: csvPreview[config.fieldMappings.comments] },
                 { col: "slot_number", value: csvPreview[config.fieldMappings.slotOccupancy] },
               ]}
@@ -227,14 +255,14 @@ function DbTablePreview({
   rows: { col: string; value: string | undefined }[];
 }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-      <div className="bg-gray-50 border-b border-gray-200 px-4 py-2 flex items-center gap-2">
+    <div className="bg-white border border-[#ddd8d0] rounded-xl overflow-hidden">
+      <div className="bg-surface border-b border-[#ddd8d0] px-4 py-2 flex items-center gap-2">
         <span className="text-xs font-mono font-semibold text-slate-600">{title}</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-gray-100">
+            <tr className="border-b border-[#f0ede8]">
               {rows.map((r) => (
                 <th key={r.col} className="px-4 py-2 text-left font-mono font-medium text-slate-400 whitespace-nowrap">
                   {r.col}

@@ -20,9 +20,12 @@ impl Default for DataSourceConfig {
 #[serde(rename_all = "camelCase")]
 pub struct FieldMappings {
     pub customer_identifier: u32,
-    pub customer_first_name: u32,
-    pub customer_last_name: u32,
-    pub customer_phone: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub customer_first_name: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub customer_last_name: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub customer_phone: Option<u32>,
     pub full_invoice_number: u32,
     pub display_invoice_number: u32,
     pub num_items: u32,
@@ -38,9 +41,9 @@ impl Default for FieldMappings {
     fn default() -> Self {
         Self {
             customer_identifier: 6,
-            customer_first_name: 8,
-            customer_last_name: 7,
-            customer_phone: 9,
+            customer_first_name: Some(8),
+            customer_last_name: Some(7),
+            customer_phone: Some(9),
             full_invoice_number: 1,
             display_invoice_number: 2,
             num_items: 3,
@@ -78,12 +81,82 @@ impl Default for DatabaseConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TicketField {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub show_barcode: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketTemplateConfig {
+    pub header_text: String,
+    pub footer_text: String,
+    pub fields: Vec<TicketField>,
+}
+
+impl Default for TicketTemplateConfig {
+    fn default() -> Self {
+        Self {
+            header_text: String::new(),
+            footer_text: String::new(),
+            fields: vec![
+                TicketField { id: "ticketNumber".into(),        label: "Ticket Number".into(),       enabled: true,  show_barcode: Some(true) },
+                TicketField { id: "customerIdentifier".into(),  label: "Customer ID".into(),         enabled: true,  show_barcode: None },
+                TicketField { id: "customerName".into(),        label: "Customer Name".into(),       enabled: true,  show_barcode: None },
+                TicketField { id: "numItems".into(),            label: "Number of Items".into(),     enabled: true,  show_barcode: None },
+                TicketField { id: "dropoffDate".into(),         label: "Drop-off Date".into(),       enabled: true,  show_barcode: None },
+                TicketField { id: "pickupDate".into(),          label: "Pickup Date".into(),         enabled: true,  show_barcode: None },
+                TicketField { id: "comments".into(),            label: "Notes / Comments".into(),    enabled: false, show_barcode: None },
+                TicketField { id: "itemList".into(),            label: "Garment List".into(),        enabled: true,  show_barcode: Some(false) },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrinterConfig {
+    pub connection_type: String,
+    pub selected_printer: String,
+    pub port_path: String,
+    pub paper_size: String,
+    pub orientation: String,
+    pub quality: String,
+    pub copies: u32,
+    pub color_mode: String,
+    #[serde(default)]
+    pub ticket_template: TicketTemplateConfig,
+}
+
+impl Default for PrinterConfig {
+    fn default() -> Self {
+        Self {
+            connection_type: "system".to_string(),
+            selected_printer: String::new(),
+            port_path: String::new(),
+            paper_size: "Letter".to_string(),
+            orientation: "portrait".to_string(),
+            quality: "normal".to_string(),
+            copies: 1,
+            color_mode: "grayscale".to_string(),
+            ticket_template: TicketTemplateConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfiguratorConfig {
     pub pos_system: String,
     pub data_source: DataSourceConfig,
     pub field_mappings: FieldMappings,
     pub database: DatabaseConfig,
     pub opc_server_url: String,
+    #[serde(default)]
+    pub printer: PrinterConfig,
 }
 
 impl Default for ConfiguratorConfig {
@@ -94,6 +167,7 @@ impl Default for ConfiguratorConfig {
             field_mappings: FieldMappings::default(),
             database: DatabaseConfig::default(),
             opc_server_url: "opc.tcp://localhost:4840".to_string(),
+            printer: PrinterConfig::default(),
         }
     }
 }

@@ -25,7 +25,7 @@ function FolderField({
   status,
 }: FolderFieldProps) {
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5">
+    <div className="bg-white border border-[#ddd8d0] rounded-xl p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-slate-800 text-sm">{label}</p>
@@ -50,7 +50,7 @@ function FolderField({
         </div>
         <button
           onClick={onPick}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer shrink-0"
+          className="flex items-center gap-2 px-4 py-2 bg-navy hover:bg-navy-light text-white text-sm font-medium rounded-lg transition-colors cursor-pointer shrink-0"
         >
           <FolderOpen size={15} />
           Browse

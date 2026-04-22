@@ -15,7 +15,7 @@ export default function EquipmentSettings({ config, onChange }: Props) {
         </p>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-5">
+      <div className="bg-white border border-[#ddd8d0] rounded-xl p-6 space-y-5">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
             OPC Server Address
@@ -29,7 +29,7 @@ export default function EquipmentSettings({ config, onChange }: Props) {
             value={config.opcServerUrl}
             placeholder="opc.tcp://localhost:4840"
             onChange={(e) => onChange({ opcServerUrl: e.target.value })}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-slate-800 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+            className="w-full border border-[#ddd8d0] rounded-lg px-3 py-2 text-sm text-slate-800 font-mono focus:outline-none focus:border-navy focus:ring-1 focus:ring-[rgba(30,61,79,0.12)]"
           />
         </div>
       </div>

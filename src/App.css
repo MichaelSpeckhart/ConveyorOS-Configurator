@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@theme {
+  --color-navy:       #1e3d4f;
+  --color-navy-light: #274e65;
+  --color-navy-muted: #9ec5d8;
+  --color-surface:    #f0ede8;
+  --color-surface-2:  #e8e4de;
+}
+
 html,
 body,
 #root {
@@ -10,14 +18,48 @@ body,
 }
 
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Nunito", "Gill Sans", Calibri, "Trebuchet MS", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.5;
   font-weight: 400;
-  color: #0f172a;
-  background-color: #ffffff;
+
+  color: #1a2a35;
+  background-color: #f0ede8;
+
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+input,
+select,
+textarea {
+  border-radius: 10px;
+  border: 1.5px solid #d8d3cc;
+  padding: 0.5em 0.75em;
+  font-size: 0.875em;
+  font-family: inherit;
+  color: #1a2a35;
+  background-color: #ffffff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #1e3d4f;
+  box-shadow: 0 0 0 3px rgba(30, 61, 79, 0.12);
+}
+
+button {
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+button:focus {
+  outline: none;
 }
