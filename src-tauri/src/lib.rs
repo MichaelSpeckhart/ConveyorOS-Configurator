@@ -281,8 +281,7 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
         }
     }
 
-    // CUPS printer queues — Epson TM USB Printer Class devices register here on macOS.
-    // Raw ESC/POS is sent via: lp -d <queue_name> -o raw <file>
+    // CUPS printer queues — only include queues that look like receipt/ESC-POS printers.
     if let Ok(output) = Command::new("lpstat").arg("-p").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -291,12 +290,16 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
             let name = rest.split_whitespace().next().unwrap_or("").to_string();
             if name.is_empty() { continue; }
             let lower = name.to_lowercase();
-            let description = if lower.contains("epson") || lower.contains("tm-") || lower.contains("receipt") || lower.contains("thermal") {
-                "CUPS Queue — Receipt Printer".to_string()
-            } else {
-                "CUPS Printer Queue".to_string()
-            };
-            ports.push(UsbPortInfo { path: name, description });
+            let is_receipt = lower.contains("epson")
+                || lower.contains("tm-")
+                || lower.contains("tm_")
+                || lower.contains("receipt")
+                || lower.contains("thermal")
+                || lower.contains("star")
+                || lower.contains("bixolon")
+                || lower.contains("citizen");
+            if !is_receipt { continue; }
+            ports.push(UsbPortInfo { path: name, description: "CUPS Queue — Receipt Printer".to_string() });
         }
     }
 
@@ -460,14 +463,68 @@ fn parse_vid_pid(s: &str) -> Result<(u16, u16), String> {
     Ok((vid, pid))
 }
 
+fn looks_like_ip(s: &str) -> bool {
+    // Accept bare IP (192.168.1.50) or IP:port (192.168.1.50:9100)
+    let host = s.splitn(2, ':').next().unwrap_or(s);
+    let parts: Vec<&str> = host.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
+}
+
 fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
-    use escpos_rs::{Printer, PrinterProfile};
-    let (vid, pid) = parse_vid_pid(port_path)?;
-    let profile = PrinterProfile::usb_builder(vid, pid).build();
-    let printer = Printer::new(profile)
-        .map_err(|e| format!("Failed to connect to printer: {e}"))?
-        .ok_or_else(|| format!("Printer {port_path} not found on USB. Make sure it is connected and powered on."))?;
-    printer.raw(data).map_err(|e| format!("Failed to send data to printer: {e}"))
+    use std::io::Write;
+
+    // VID:PID hex (e.g. "04b8:0202") → direct USB via escpos_rs
+    if let Ok((vid, pid)) = parse_vid_pid(port_path) {
+        use escpos_rs::{Printer, PrinterProfile};
+        let profile = PrinterProfile::usb_builder(vid, pid).build();
+        let printer = Printer::new(profile)
+            .map_err(|e| format!("Failed to connect to printer: {e}"))?
+            .ok_or_else(|| format!("Printer {port_path} not found on USB. Make sure it is connected and powered on."))?;
+        return printer.raw(data).map_err(|e| format!("Failed to send data to printer: {e}"));
+    }
+
+    // IP address → TCP port 9100 (Epson/Star raw printing standard)
+    if looks_like_ip(port_path) {
+        let addr = if port_path.contains(':') {
+            port_path.to_string()
+        } else {
+            format!("{port_path}:9100")
+        };
+        use std::net::TcpStream;
+        use std::time::Duration;
+        let mut stream = TcpStream::connect(&addr)
+            .map_err(|e| format!("Cannot connect to {addr}: {e}"))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("Timeout error: {e}"))?;
+        stream.write_all(data).map_err(|e| format!("Network write error: {e}"))?;
+        stream.flush().map_err(|e| format!("Network flush error: {e}"))?;
+        return Ok(());
+    }
+
+    // macOS/Linux CUPS queue name → submit via lp -o raw
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if !port_path.starts_with("/dev/") {
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join("conveyoros_escpos.bin");
+        std::fs::write(&tmp, data).map_err(|e| format!("Temp file error: {e}"))?;
+        let out = Command::new("lp")
+            .args(["-d", port_path, "-o", "raw", tmp.to_str().unwrap()])
+            .output()
+            .map_err(|e| format!("lp command failed: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("lp error: {}", String::from_utf8_lossy(&out.stderr)));
+        }
+        return Ok(());
+    }
+
+    // Serial port or device node (/dev/cu.usb*, \\.\COM1, etc.) → write bytes directly
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(port_path)
+        .map_err(|e| format!("Cannot open {port_path}: {e}"))?;
+    file.write_all(data).map_err(|e| format!("Write error: {e}"))?;
+    file.flush().map_err(|e| format!("Flush error: {e}"))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -497,19 +554,17 @@ fn discover_escpos_printers() -> Result<Vec<EscposPrinterInfo>, String> {
         let Ok(desc) = device.device_descriptor() else { continue };
         let vid = desc.vendor_id();
         let pid = desc.product_id();
-        let is_printer_class = desc.class_code() == 7;
+        // Filter purely by known receipt-printer vendor IDs — Epson TM and many
+        // other receipt printers use vendor-specific USB class (255) rather than
+        // printer class (7), so a class check would miss them. HP/Brother/etc.
+        // are not in this list so they are excluded automatically.
         let name = vendor_name(vid);
-        if !is_printer_class && name.is_empty() {
+        if name.is_empty() {
             continue;
         }
-        let description = if name.is_empty() {
-            format!("USB Printer {:04x}:{:04x}", vid, pid)
-        } else {
-            format!("{} ({:04x}:{:04x})", name, vid, pid)
-        };
         printers.push(EscposPrinterInfo {
             path: format!("{:04x}:{:04x}", vid, pid),
-            description,
+            description: format!("{} ({:04x}:{:04x})", name, vid, pid),
         });
     }
     Ok(printers)
