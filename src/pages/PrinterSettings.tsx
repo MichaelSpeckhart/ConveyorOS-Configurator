@@ -140,7 +140,7 @@ export default function PrinterSettings({ config, onChange }: Props) {
         </div>
         {isUsb && (
           <p className="text-xs text-gray-400 mt-2">
-            For receipt printers like Epson TM-series connected via USB cable.
+            For Epson TM-series and similar receipt printers. On macOS, USB printers appear as CUPS queues — use "Scan" to discover them.
           </p>
         )}
       </section>
@@ -230,7 +230,7 @@ export default function PrinterSettings({ config, onChange }: Props) {
               type="text"
               value={printer.portPath}
               onChange={(e) => updatePrinter({ portPath: e.target.value })}
-              placeholder="e.g. /dev/cu.usbserial-1410 or COM3"
+              placeholder="e.g. /dev/cu.usbserial-1410, COM3, or CUPS queue name"
               className="w-full px-3 py-2 rounded-lg border border-[#ddd8d0] text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>

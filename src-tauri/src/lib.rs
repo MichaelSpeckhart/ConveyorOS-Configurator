@@ -263,33 +263,43 @@ fn discover_usb_ports() -> Result<Vec<UsbPortInfo>, String> {
 
 #[cfg(target_os = "macos")]
 fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
+    use std::process::Command;
     let mut ports: Vec<UsbPortInfo> = Vec::new();
-    // macOS USB serial/printer devices appear under /dev/cu.*
+
+    // USB-serial adapter devices (e.g. Epson TM via RS232 adapter)
     if let Ok(entries) = std::fs::read_dir("/dev") {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("cu.usb") || name.starts_with("cu.usbserial") || name.starts_with("cu.usbmodem") {
                 let description = if name.to_lowercase().contains("serial") {
-                    "USB Serial Device".to_string()
+                    "USB Serial Port".to_string()
                 } else {
-                    "USB Modem / Printer".to_string()
+                    "USB Serial / Modem".to_string()
                 };
                 ports.push(UsbPortInfo { path: format!("/dev/{name}"), description });
             }
         }
     }
-    // Also check /dev/usb/lp* (USB printer class devices via macOS CUPS backend)
-    if let Ok(entries) = std::fs::read_dir("/dev/usb") {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("lp") {
-                ports.push(UsbPortInfo {
-                    path: format!("/dev/usb/{name}"),
-                    description: "USB Line Printer".to_string(),
-                });
-            }
+
+    // CUPS printer queues — Epson TM USB Printer Class devices register here on macOS.
+    // Raw ESC/POS is sent via: lp -d <queue_name> -o raw <file>
+    if let Ok(output) = Command::new("lpstat").arg("-p").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if !line.starts_with("printer ") { continue; }
+            let rest = &line["printer ".len()..];
+            let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            if name.is_empty() { continue; }
+            let lower = name.to_lowercase();
+            let description = if lower.contains("epson") || lower.contains("tm-") || lower.contains("receipt") || lower.contains("thermal") {
+                "CUPS Queue — Receipt Printer".to_string()
+            } else {
+                "CUPS Printer Queue".to_string()
+            };
+            ports.push(UsbPortInfo { path: name, description });
         }
     }
+
     ports.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(ports)
 }
@@ -430,15 +440,48 @@ fn build_test_receipt(template: &TicketTemplateConfig) -> Vec<u8> {
 #[tauri::command]
 fn test_print_ticket(port_path: String, template: TicketTemplateConfig) -> Result<(), String> {
     if port_path.is_empty() {
-        return Err("No USB port selected. Please select or enter a port path first.".to_string());
+        return Err("No port selected. Select a port or printer queue from the scan results, or type one in manually.".to_string());
     }
     let receipt = build_test_receipt(&template);
+    _send_escpos(&port_path, &receipt)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if port_path.starts_with("/dev/") {
+        // USB-serial adapter or direct device node
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(port_path)
+            .map_err(|e| format!("Cannot open {port_path}: {e}"))?;
+        file.write_all(data).map_err(|e| format!("Write error: {e}"))?;
+        file.flush().map_err(|e| format!("Flush error: {e}"))?;
+    } else {
+        // CUPS queue name — write ESC/POS to a temp file and submit via lp -o raw
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join("conveyoros_escpos.bin");
+        std::fs::write(&tmp, data).map_err(|e| format!("Temp file error: {e}"))?;
+        let out = Command::new("lp")
+            .args(["-d", port_path, "-o", "raw", tmp.to_str().unwrap()])
+            .output()
+            .map_err(|e| format!("lp command failed: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("lp error: {stderr}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .open(&port_path)
-        .map_err(|e| format!("Failed to open {port_path}: {e}"))?;
-    file.write_all(&receipt).map_err(|e| format!("Print error: {e}"))?;
+        .open(port_path)
+        .map_err(|e| format!("Cannot open {port_path}: {e}"))?;
+    file.write_all(data).map_err(|e| format!("Write error: {e}"))?;
     file.flush().map_err(|e| format!("Flush error: {e}"))?;
     Ok(())
 }
