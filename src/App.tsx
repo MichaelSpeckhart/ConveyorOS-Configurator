@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Send,
+  SlidersHorizontal,
 } from "lucide-react";
 import { ConfiguratorConfig, NavSection, defaultConfig, getDefaultFieldMappings } from "./types/config";
 import PosSelection from "./pages/PosSelection";
@@ -19,9 +20,11 @@ import FieldMappings from "./pages/FieldMappings";
 import DatabaseSettings from "./pages/DatabaseSettings";
 import EquipmentSettings from "./pages/EquipmentSettings";
 import PrinterSettings from "./pages/PrinterSettings";
+import PosSettings from "./pages/PosSettings";
 
 const NAV_ITEMS: { id: NavSection; label: string; icon: React.ReactNode }[] = [
   { id: "pos-system",      label: "POS System",    icon: <LayoutGrid size={18} /> },
+  { id: "pos-settings",    label: "POS Settings",  icon: <SlidersHorizontal size={18} /> },
   { id: "data-source",     label: "Data Source",   icon: <FolderOpen size={18} /> },
   { id: "field-mappings",  label: "Field Mappings",icon: <Columns3 size={18} /> },
   { id: "database",        label: "Database",      icon: <Database size={18} /> },
@@ -168,6 +171,7 @@ export default function App() {
       {/* Main content */}
       <main className="flex-1 overflow-y-auto bg-surface">
         {activeSection === "pos-system"       && <PosSelection {...pageProps} />}
+        {activeSection === "pos-settings"     && <PosSettings {...pageProps} />}
         {activeSection === "data-source"      && <DataSource {...pageProps} />}
         {activeSection === "field-mappings"   && <FieldMappings {...pageProps} />}
         {activeSection === "database"         && <DatabaseSettings {...pageProps} />}

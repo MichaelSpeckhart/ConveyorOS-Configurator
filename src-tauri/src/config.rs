@@ -149,24 +149,70 @@ impl Default for PrinterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PosSettingsConfig {
+    pub receipt_printing: String,
+    pub receipt_layout: String,
+    pub auto_complete_orders: bool,
+    pub duplicate_ticket_handling: String,
+}
+
+impl Default for PosSettingsConfig {
+    fn default() -> Self {
+        Self {
+            receipt_printing: "oas".to_string(),
+            receipt_layout: "dynamic".to_string(),
+            auto_complete_orders: true,
+            duplicate_ticket_handling: "skip".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameConfig {
+    pub latches: u8,
+    pub slots: Vec<bool>,
+}
+
+impl Default for FrameConfig {
+    fn default() -> Self {
+        Self {
+            latches: 5,
+            slots: vec![true; 5],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfiguratorConfig {
     pub pos_system: String,
+    #[serde(default)]
+    pub pos_settings: PosSettingsConfig,
     pub data_source: DataSourceConfig,
     pub field_mappings: FieldMappings,
     pub database: DatabaseConfig,
     pub opc_server_url: String,
+    #[serde(default = "default_frames")]
+    pub frames: Vec<FrameConfig>,
     #[serde(default)]
     pub printer: PrinterConfig,
+}
+
+fn default_frames() -> Vec<FrameConfig> {
+    vec![FrameConfig::default()]
 }
 
 impl Default for ConfiguratorConfig {
     fn default() -> Self {
         Self {
             pos_system: "spot".to_string(),
+            pos_settings: PosSettingsConfig::default(),
             data_source: DataSourceConfig::default(),
             field_mappings: FieldMappings::default(),
             database: DatabaseConfig::default(),
             opc_server_url: "opc.tcp://localhost:4840".to_string(),
+            frames: default_frames(),
             printer: PrinterConfig::default(),
         }
     }

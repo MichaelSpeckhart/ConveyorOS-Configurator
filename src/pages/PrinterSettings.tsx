@@ -62,11 +62,15 @@ export default function PrinterSettings({ config, onChange }: Props) {
     setScanError(null);
     try {
       if (printer.connectionType === "usb") {
-        const ports = await invoke<UsbPortInfo[]>("discover_usb_ports");
-        setUsbPorts(ports);
+        const [ports, escpos] = await Promise.all([
+          invoke<UsbPortInfo[]>("discover_usb_ports"),
+          invoke<UsbPortInfo[]>("discover_escpos_printers"),
+        ]);
+        const combined = [...ports, ...escpos];
+        setUsbPorts(combined);
         setHasScanned(true);
-        if (!printer.portPath && ports.length > 0) {
-          updatePrinter({ portPath: ports[0].path });
+        if (!printer.portPath && combined.length > 0) {
+          updatePrinter({ portPath: combined[0].path });
         }
       } else {
         const printers = await invoke<PrinterInfo[]>("discover_printers");

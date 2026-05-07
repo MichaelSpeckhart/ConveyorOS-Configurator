@@ -67,12 +67,33 @@ export interface PrinterConfig {
   ticketTemplate: TicketTemplateConfig;
 }
 
+export interface FrameConfig {
+  latches: 5 | 10;
+  slots: boolean[];
+}
+
+export interface PosSettingsConfig {
+  receiptPrinting: "pos" | "oas";
+  receiptLayout: "simple" | "dynamic";
+  autoCompleteOrders: boolean;
+  duplicateTicketHandling: "skip" | "overwrite";
+}
+
+export const defaultPosSettings: PosSettingsConfig = {
+  receiptPrinting: "oas",
+  receiptLayout: "dynamic",
+  autoCompleteOrders: true,
+  duplicateTicketHandling: "skip",
+};
+
 export interface ConfiguratorConfig {
   posSystem: string;
+  posSettings: PosSettingsConfig;
   dataSource: DataSourceConfig;
   fieldMappings: FieldMappings;
   database: DatabaseConfig;
   opcServerUrl: string;
+  frames: FrameConfig[];
   printer: PrinterConfig;
 }
 
@@ -111,6 +132,7 @@ export const winCleanersFieldMappings: FieldMappings = {
 
 export const defaultConfig: ConfiguratorConfig = {
   posSystem: "spot",
+  posSettings: defaultPosSettings,
   dataSource: {
     watchDirectory: "",
     outputDirectory: "",
@@ -124,6 +146,7 @@ export const defaultConfig: ConfiguratorConfig = {
     password: "",
   },
   opcServerUrl: "opc.tcp://localhost:4840",
+  frames: [{ latches: 5, slots: [true, true, true, true, true] }],
   printer: {
     connectionType: "system",
     selectedPrinter: "",
@@ -181,6 +204,7 @@ export function getDefaultFieldMappings(posSystem: string): FieldMappings {
 
 export type NavSection =
   | "pos-system"
+  | "pos-settings"
   | "data-source"
   | "field-mappings"
   | "database"

@@ -334,28 +334,58 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
 #[cfg(target_os = "windows")]
 fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
     use std::process::Command;
-    // Query USB serial / printer ports via WMI
-    let script = r#"Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .map_err(|e| format!("Failed to query USB ports: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut ports: Vec<UsbPortInfo> = Vec::new();
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        if parts.is_empty() { continue; }
-        let name = parts[0].trim().to_string();
-        if name.is_empty() { continue; }
-        // Extract COM port number for the path
-        let path = if let Some(start) = name.find("COM") {
-            let com: String = name[start..].chars().take_while(|c| c.is_alphanumeric()).collect();
-            format!("\\\\.\\{com}")
-        } else {
-            name.clone()
-        };
-        ports.push(UsbPortInfo { path, description: name });
+
+    // COM ports and USB printing devices via PnP
+    let pnp_script = r#"Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", pnp_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.is_empty() { continue; }
+            let name = parts[0].trim().to_string();
+            if name.is_empty() { continue; }
+            let path = if let Some(start) = name.find("COM") {
+                let com: String = name[start..].chars().take_while(|c| c.is_alphanumeric()).collect();
+                format!("\\\\.\\{com}")
+            } else {
+                name.clone()
+            };
+            ports.push(UsbPortInfo { path, description: name });
+        }
     }
+
+    // Named receipt/ESC-POS printers installed in Windows — sent via raw spool API
+    let printer_script = r#"Get-WmiObject -Class Win32_Printer | ForEach-Object { $_.Name }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", printer_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let name = line.trim().to_string();
+            if name.is_empty() { continue; }
+            let lower = name.to_lowercase();
+            let is_receipt = lower.contains("epson")
+                || lower.contains("tm-")
+                || lower.contains("tm_")
+                || lower.contains("receipt")
+                || lower.contains("thermal")
+                || lower.contains("star")
+                || lower.contains("bixolon")
+                || lower.contains("citizen");
+            if !is_receipt { continue; }
+            if ports.iter().any(|p| p.path == name) { continue; }
+            ports.push(UsbPortInfo {
+                path: name.clone(),
+                description: format!("Windows Printer (raw spool) — {name}"),
+            });
+        }
+    }
+
     Ok(ports)
 }
 
@@ -470,6 +500,79 @@ fn looks_like_ip(s: &str) -> bool {
     parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
+#[cfg(target_os = "windows")]
+fn _send_raw_windows_printer(printer_name: &str, data: &[u8]) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::winspool::{
+        ClosePrinter, EndDocPrinter, EndPagePrinter, OpenPrinterW, StartDocPrinterW,
+        StartPagePrinter, WritePrinter, DOC_INFO_1W,
+    };
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let mut name_w = to_wide(printer_name);
+    let mut datatype_w = to_wide("RAW");
+    let mut docname_w = to_wide("ESC/POS");
+
+    let mut handle = ptr::null_mut();
+    unsafe {
+        if OpenPrinterW(name_w.as_mut_ptr(), &mut handle, ptr::null_mut()) == 0 {
+            return Err(format!(
+                "Cannot open printer '{}': {}",
+                printer_name,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut doc_info = DOC_INFO_1W {
+            pDocName: docname_w.as_mut_ptr(),
+            pOutputFile: ptr::null_mut(),
+            pDatatype: datatype_w.as_mut_ptr(),
+        };
+        let job = StartDocPrinterW(handle, 1, &mut doc_info as *mut _ as *mut _);
+        if job == 0 {
+            ClosePrinter(handle);
+            return Err(format!(
+                "StartDocPrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if StartPagePrinter(handle) == 0 {
+            EndDocPrinter(handle);
+            ClosePrinter(handle);
+            return Err(format!(
+                "StartPagePrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut written: DWORD = 0;
+        let ok = WritePrinter(
+            handle,
+            data.as_ptr() as *mut _,
+            data.len() as DWORD,
+            &mut written,
+        );
+        EndPagePrinter(handle);
+        EndDocPrinter(handle);
+        ClosePrinter(handle);
+
+        if ok == 0 {
+            return Err(format!(
+                "WritePrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
     use std::io::Write;
 
@@ -515,6 +618,16 @@ fn _send_escpos(port_path: &str, data: &[u8]) -> Result<(), String> {
             return Err(format!("lp error: {}", String::from_utf8_lossy(&out.stderr)));
         }
         return Ok(());
+    }
+
+    // Windows named printer (not a COM/device path) → raw spool via winspool.drv
+    #[cfg(target_os = "windows")]
+    {
+        let is_device_path = port_path.starts_with("\\\\.\\")
+            || port_path.to_uppercase().starts_with("COM");
+        if !is_device_path {
+            return _send_raw_windows_printer(port_path, data);
+        }
     }
 
     // Serial port or device node (/dev/cu.usb*, \\.\COM1, etc.) → write bytes directly
