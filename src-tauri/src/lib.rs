@@ -34,40 +34,50 @@ fn oas_data_dir() -> Result<std::path::PathBuf, String> {
 fn apply_to_oas(config: ConfiguratorConfig) -> Result<String, String> {
     let dir = oas_data_dir()?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+
+    // Read whatever OAS already has so we only overwrite the keys we own —
+    // setup-complete flags and other OAS-internal state are preserved.
+    let mut store: serde_json::Value = if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({ "app_settings": {} }))
+    } else {
+        serde_json::json!({ "app_settings": {} })
+    };
 
     let field_mappings = serde_json::to_value(&config.field_mappings)
         .map_err(|e| e.to_string())?;
-
     let ticket_template = serde_json::to_value(&config.printer.ticket_template)
         .map_err(|e| e.to_string())?;
 
-    let app_settings = serde_json::json!({
-        "posCsvDir":            config.data_source.watch_directory,
-        "conveyorCsvOutputDir": config.data_source.output_directory,
-        "dbHost":               config.database.host,
-        "dbPort":               config.database.port,
-        "dbName":               config.database.name,
-        "dbUser":               config.database.user,
-        "dbPassword":           config.database.password,
-        "opcServerUrl":         config.opc_server_url,
-        "posSystem":            config.pos_system,
-        "fieldMappings":        field_mappings,
-        "printer": {
-            "connectionType":   config.printer.connection_type,
-            "selectedPrinter":  config.printer.selected_printer,
-            "portPath":         config.printer.port_path,
-            "paperSize":        config.printer.paper_size,
-            "orientation":      config.printer.orientation,
-            "quality":          config.printer.quality,
-            "copies":           config.printer.copies,
-            "colorMode":        config.printer.color_mode,
-            "ticketTemplate":   ticket_template,
-        },
-    });
+    let settings = store["app_settings"]
+        .as_object_mut()
+        .ok_or_else(|| "app_settings is not an object".to_string())?;
 
-    // tauri-plugin-store format: top-level object keyed by store key
-    let store = serde_json::json!({ "app_settings": app_settings });
-    let path = dir.join("settings.json");
+    settings.insert("posCsvDir".into(),            config.data_source.watch_directory.into());
+    settings.insert("conveyorCsvOutputDir".into(), config.data_source.output_directory.into());
+    settings.insert("dbHost".into(),               config.database.host.into());
+    settings.insert("dbPort".into(),               config.database.port.into());
+    settings.insert("dbName".into(),               config.database.name.into());
+    settings.insert("dbUser".into(),               config.database.user.into());
+    settings.insert("dbPassword".into(),           config.database.password.into());
+    settings.insert("opcServerUrl".into(),         config.opc_server_url.into());
+    settings.insert("posSystem".into(),            config.pos_system.into());
+    settings.insert("fieldMappings".into(),        field_mappings);
+    settings.insert("printer".into(), serde_json::json!({
+        "connectionType":  config.printer.connection_type,
+        "selectedPrinter": config.printer.selected_printer,
+        "portPath":        config.printer.port_path,
+        "paperSize":       config.printer.paper_size,
+        "orientation":     config.printer.orientation,
+        "quality":         config.printer.quality,
+        "copies":          config.printer.copies,
+        "colorMode":       config.printer.color_mode,
+        "ticketTemplate":  ticket_template,
+    }));
+
     fs::write(&path, serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
@@ -332,33 +342,25 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn _is_receipt_printer_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("epson")
+        || lower.contains("tm-")
+        || lower.contains("tm_")
+        || lower.contains("receipt")
+        || lower.contains("thermal")
+        || lower.contains("star")
+        || lower.contains("bixolon")
+        || lower.contains("citizen")
+}
+
+#[cfg(target_os = "windows")]
 fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
     use std::process::Command;
     let mut ports: Vec<UsbPortInfo> = Vec::new();
 
-    // COM ports and USB printing devices via PnP
-    let pnp_script = r#"Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
-    if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-Command", pnp_script])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.splitn(2, '|').collect();
-            if parts.is_empty() { continue; }
-            let name = parts[0].trim().to_string();
-            if name.is_empty() { continue; }
-            let path = if let Some(start) = name.find("COM") {
-                let com: String = name[start..].chars().take_while(|c| c.is_alphanumeric()).collect();
-                format!("\\\\.\\{com}")
-            } else {
-                name.clone()
-            };
-            ports.push(UsbPortInfo { path, description: name });
-        }
-    }
-
-    // Named receipt/ESC-POS printers installed in Windows — sent via raw spool API
+    // Run Win32_Printer FIRST so named receipt printers take priority over their
+    // COM port aliases that Epson's driver creates.
     let printer_script = r#"Get-WmiObject -Class Win32_Printer | ForEach-Object { $_.Name }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", printer_script])
@@ -367,21 +369,44 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let name = line.trim().to_string();
-            if name.is_empty() { continue; }
-            let lower = name.to_lowercase();
-            let is_receipt = lower.contains("epson")
-                || lower.contains("tm-")
-                || lower.contains("tm_")
-                || lower.contains("receipt")
-                || lower.contains("thermal")
-                || lower.contains("star")
-                || lower.contains("bixolon")
-                || lower.contains("citizen");
-            if !is_receipt { continue; }
-            if ports.iter().any(|p| p.path == name) { continue; }
+            if name.is_empty() || !_is_receipt_printer_name(&name) {
+                continue;
+            }
             ports.push(UsbPortInfo {
                 path: name.clone(),
                 description: format!("Windows Printer (raw spool) — {name}"),
+            });
+        }
+    }
+
+    // COM ports via PnP — skip any that belong to a receipt printer already listed above
+    let pnp_script = r#"Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", pnp_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let name = parts[0].trim().to_string();
+            if name.is_empty() || _is_receipt_printer_name(&name) {
+                continue;
+            }
+            let path = if let Some(start) = name.find("COM") {
+                let com: String = name[start..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect();
+                format!("\\\\.\\{com}")
+            } else {
+                name.clone()
+            };
+            ports.push(UsbPortInfo {
+                path,
+                description: name,
             });
         }
     }
