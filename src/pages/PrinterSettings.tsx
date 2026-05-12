@@ -70,7 +70,14 @@ export default function PrinterSettings({ config, onChange }: Props) {
         setUsbPorts(combined);
         setHasScanned(true);
         if (!printer.portPath && combined.length > 0) {
-          updatePrinter({ portPath: combined[0].path });
+          // Prefer named Windows printer queues (e.g. "EPSON TM-T88VII") over
+          // COM port device paths (\\.\ COM*) and raw VID:PID USB entries.
+          const isNamedPrinter = (p: string) =>
+            !p.startsWith("\\\\.\\") &&
+            !/^COM\d+$/i.test(p) &&
+            !/^[0-9a-f]{4}:[0-9a-f]{4}$/i.test(p);
+          const preferred = combined.find((p) => isNamedPrinter(p.path));
+          updatePrinter({ portPath: (preferred ?? combined[0]).path });
         }
       } else {
         const printers = await invoke<PrinterInfo[]>("discover_printers");

@@ -47,6 +47,8 @@ fn apply_to_oas(config: ConfiguratorConfig) -> Result<String, String> {
         serde_json::json!({ "app_settings": {} })
     };
 
+    
+
     let field_mappings = serde_json::to_value(&config.field_mappings)
         .map_err(|e| e.to_string())?;
     let ticket_template = serde_json::to_value(&config.printer.ticket_template)
@@ -223,8 +225,9 @@ fn _discover_printers_impl() -> Result<Vec<PrinterInfo>, String> {
 fn _discover_printers_impl() -> Result<Vec<PrinterInfo>, String> {
     use std::process::Command;
 
-    // PowerShell: emit pipe-delimited Name|IsDefault|WorkOffline per printer
-    let script = r#"Get-WmiObject -Class Win32_Printer | ForEach-Object { "$($_.Name)|$($_.Default)|$($_.WorkOffline)" }"#;
+    // Get-CimInstance works in all PowerShell versions (3+ including PS 7);
+    // Get-WmiObject is not available in PS 7 cross-platform installs.
+    let script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.Default)|$($_.WorkOffline)" }"#;
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", script])
         .output()
@@ -356,12 +359,20 @@ fn _is_receipt_printer_name(name: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
+    use std::collections::HashSet;
     use std::process::Command;
     let mut ports: Vec<UsbPortInfo> = Vec::new();
 
-    // Run Win32_Printer FIRST so named receipt printers take priority over their
-    // COM port aliases that Epson's driver creates.
-    let printer_script = r#"Get-WmiObject -Class Win32_Printer | ForEach-Object { $_.Name }"#;
+    // Query all Windows printer queues. Receipt-brand printers are sorted first so
+    // the frontend auto-selection picks the Epson/Star/etc. over a COM port.
+    // We show all printers (not just receipt brands) because users sometimes rename
+    // the queue or install via a generic driver that omits the brand prefix.
+    // Get-CimInstance works in all PowerShell versions (3+ including PS 7);
+    // Get-WmiObject is unavailable in cross-platform PS 7 installs.
+    let printer_script =
+        r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
+    let mut receipt_printers: Vec<UsbPortInfo> = Vec::new();
+    let mut other_printers: Vec<UsbPortInfo> = Vec::new();
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", printer_script])
         .output()
@@ -369,18 +380,30 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let name = line.trim().to_string();
-            if name.is_empty() || !_is_receipt_printer_name(&name) {
+            if name.is_empty() {
                 continue;
             }
-            ports.push(UsbPortInfo {
+            let entry = UsbPortInfo {
                 path: name.clone(),
                 description: format!("Windows Printer (raw spool) — {name}"),
-            });
+            };
+            if _is_receipt_printer_name(&name) {
+                receipt_printers.push(entry);
+            } else {
+                other_printers.push(entry);
+            }
         }
     }
+    // Receipt printers first so they are auto-selected by the frontend
+    ports.extend(receipt_printers);
+    ports.extend(other_printers);
 
-    // COM ports via PnP — skip any that belong to a receipt printer already listed above
-    let pnp_script = r#"Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    // Track printer names already in the list to avoid duplicate COM-port aliases
+    // that Epson's driver sometimes creates alongside the named queue.
+    let known_names: HashSet<String> = ports.iter().map(|p| p.path.to_lowercase()).collect();
+
+    // COM ports and USB printing devices via PnP
+    let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", pnp_script])
         .output()
@@ -392,7 +415,7 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
                 continue;
             }
             let name = parts[0].trim().to_string();
-            if name.is_empty() || _is_receipt_printer_name(&name) {
+            if name.is_empty() || known_names.contains(&name.to_lowercase()) {
                 continue;
             }
             let path = if let Some(start) = name.find("COM") {
