@@ -363,46 +363,8 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
     use std::process::Command;
     let mut ports: Vec<UsbPortInfo> = Vec::new();
 
-    // Query all Windows printer queues. Receipt-brand printers are sorted first so
-    // the frontend auto-selection picks the Epson/Star/etc. over a COM port.
-    // We show all printers (not just receipt brands) because users sometimes rename
-    // the queue or install via a generic driver that omits the brand prefix.
-    // Get-CimInstance works in all PowerShell versions (3+ including PS 7);
-    // Get-WmiObject is unavailable in cross-platform PS 7 installs.
-    let printer_script =
-        r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
-    let mut receipt_printers: Vec<UsbPortInfo> = Vec::new();
-    let mut other_printers: Vec<UsbPortInfo> = Vec::new();
-    if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-Command", printer_script])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let name = line.trim().to_string();
-            if name.is_empty() {
-                continue;
-            }
-            let entry = UsbPortInfo {
-                path: name.clone(),
-                description: format!("Windows Printer (raw spool) — {name}"),
-            };
-            if _is_receipt_printer_name(&name) {
-                receipt_printers.push(entry);
-            } else {
-                other_printers.push(entry);
-            }
-        }
-    }
-    // Receipt printers first so they are auto-selected by the frontend
-    ports.extend(receipt_printers);
-    ports.extend(other_printers);
-
-    // Track printer names already in the list to avoid duplicate COM-port aliases
-    // that Epson's driver sometimes creates alongside the named queue.
-    let known_names: HashSet<String> = ports.iter().map(|p| p.path.to_lowercase()).collect();
-
-    // COM ports and USB printing devices via PnP
+    // Hardware-level: COM ports and USB printing devices via PnP.
+    // Mirrors the /dev/cu.usb* scan on macOS — raw device paths come first.
     let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", pnp_script])
@@ -415,7 +377,7 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
                 continue;
             }
             let name = parts[0].trim().to_string();
-            if name.is_empty() || known_names.contains(&name.to_lowercase()) {
+            if name.is_empty() {
                 continue;
             }
             let path = if let Some(start) = name.find("COM") {
@@ -427,9 +389,32 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
             } else {
                 name.clone()
             };
+            ports.push(UsbPortInfo { path, description: name });
+        }
+    }
+
+    // Named printer queues — only receipt/ESC-POS brands, deduplicated against
+    // any COM-port alias already listed above.
+    // Mirrors the lpstat CUPS queue scan on macOS, filtered to receipt brands.
+    let known_paths: HashSet<String> = ports.iter().map(|p| p.description.to_lowercase()).collect();
+    let printer_script =
+        r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", printer_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let name = line.trim().to_string();
+            if name.is_empty() || !_is_receipt_printer_name(&name) {
+                continue;
+            }
+            if known_paths.contains(&name.to_lowercase()) {
+                continue;
+            }
             ports.push(UsbPortInfo {
-                path,
-                description: name,
+                path: name.clone(),
+                description: "Windows Printer Queue — Receipt Printer".to_string(),
             });
         }
     }
