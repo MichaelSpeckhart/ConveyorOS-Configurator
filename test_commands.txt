@@ -1,0 +1,3 @@
+system_profiler SPUSBDataType | grep -i -A 10 epson
+
+ioreg -p IOUSB -l | grep -i epson
