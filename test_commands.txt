@@ -1,3 +1,7 @@
-system_profiler SPUSBDataType | grep -i -A 10 epson
+Get-PnpDevice | Where-Object { $_.FriendlyName -match "Epson|TM-T88|Receipt|Printer" }
 
-ioreg -p IOUSB -l | grep -i epson
+Get-CimInstance Win32_PnPEntity |
+  Where-Object { $_.Name -match "Epson|TM-T88|Receipt|Printer" } |
+  Select-Object Name, DeviceID, Manufacturer
+
+  
