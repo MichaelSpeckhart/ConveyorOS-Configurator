@@ -359,12 +359,12 @@ fn _is_receipt_printer_name(name: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
-    use std::collections::HashSet;
     use std::process::Command;
     let mut ports: Vec<UsbPortInfo> = Vec::new();
 
-    // Hardware-level: COM ports and USB printing devices via PnP.
-    // Mirrors the /dev/cu.usb* scan on macOS — raw device paths come first.
+    // Hardware-level COM ports and USB printing devices via PnP.
+    // Mirrors the /dev/cu.usb* scan on macOS.
+    // Named printer queues are returned by discover_escpos_printers on Windows.
     let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", pnp_script])
@@ -390,32 +390,6 @@ fn _discover_usb_ports_impl() -> Result<Vec<UsbPortInfo>, String> {
                 name.clone()
             };
             ports.push(UsbPortInfo { path, description: name });
-        }
-    }
-
-    // Named printer queues — only receipt/ESC-POS brands, deduplicated against
-    // any COM-port alias already listed above.
-    // Mirrors the lpstat CUPS queue scan on macOS, filtered to receipt brands.
-    let known_paths: HashSet<String> = ports.iter().map(|p| p.description.to_lowercase()).collect();
-    let printer_script =
-        r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
-    if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-Command", printer_script])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let name = line.trim().to_string();
-            if name.is_empty() || !_is_receipt_printer_name(&name) {
-                continue;
-            }
-            if known_paths.contains(&name.to_lowercase()) {
-                continue;
-            }
-            ports.push(UsbPortInfo {
-                path: name.clone(),
-                description: "Windows Printer Queue — Receipt Printer".to_string(),
-            });
         }
     }
 
@@ -680,6 +654,7 @@ struct EscposPrinterInfo {
     description: String,
 }
 
+#[cfg(not(target_os = "windows"))]
 fn vendor_name(vid: u16) -> &'static str {
     match vid {
         0x04b8 => "Epson",
@@ -694,16 +669,21 @@ fn vendor_name(vid: u16) -> &'static str {
 
 #[tauri::command]
 fn discover_escpos_printers() -> Result<Vec<EscposPrinterInfo>, String> {
+    _discover_escpos_printers_impl()
+}
+
+// macOS / Linux: enumerate USB devices directly via libusb/rusb.
+// Epson TM and similar receipt printers are matched by known vendor IDs.
+#[cfg(not(target_os = "windows"))]
+fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
     let devices = rusb::devices().map_err(|e| format!("USB enumeration error: {e}"))?;
     let mut printers = Vec::new();
     for device in devices.iter() {
         let Ok(desc) = device.device_descriptor() else { continue };
         let vid = desc.vendor_id();
         let pid = desc.product_id();
-        // Filter purely by known receipt-printer vendor IDs — Epson TM and many
-        // other receipt printers use vendor-specific USB class (255) rather than
-        // printer class (7), so a class check would miss them. HP/Brother/etc.
-        // are not in this list so they are excluded automatically.
+        // Epson TM and many other receipt printers use vendor-specific USB class (255)
+        // rather than printer class (7), so a class check would miss them.
         let name = vendor_name(vid);
         if name.is_empty() {
             continue;
@@ -711,6 +691,34 @@ fn discover_escpos_printers() -> Result<Vec<EscposPrinterInfo>, String> {
         printers.push(EscposPrinterInfo {
             path: format!("{:04x}:{:04x}", vid, pid),
             description: format!("{} ({:04x}:{:04x})", name, vid, pid),
+        });
+    }
+    Ok(printers)
+}
+
+// Windows: libusb/rusb cannot enumerate printers that are managed by the Windows
+// printer subsystem (Epson APD uses a Windows driver, not WinUSB). Query
+// Win32_Printer instead and return receipt-brand queues as printer paths.
+// _send_escpos routes non-device-path strings to _send_raw_windows_printer.
+#[cfg(target_os = "windows")]
+fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
+    use std::process::Command;
+    let script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .map_err(|e| format!("Failed to query printers: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut printers = Vec::new();
+    for line in stdout.lines() {
+        let name = line.trim().to_string();
+        if name.is_empty() || !_is_receipt_printer_name(&name) {
+            continue;
+        }
+        printers.push(EscposPrinterInfo {
+            path: name.clone(),
+            description: format!("Windows Printer Queue — {name}"),
         });
     }
     Ok(printers)
