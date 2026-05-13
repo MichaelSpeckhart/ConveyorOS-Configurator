@@ -696,14 +696,18 @@ fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
     Ok(printers)
 }
 
-// Windows: libusb/rusb cannot enumerate printers that are managed by the Windows
-// printer subsystem (Epson APD uses a Windows driver, not WinUSB). Query
-// Win32_Printer instead and return receipt-brand queues as printer paths.
+// Windows: libusb/rusb cannot enumerate printers managed by the Windows printer
+// subsystem (Epson APD uses a Windows driver, not WinUSB). Query Win32_Printer
+// and filter by PortName — USB-connected printers get ports named "USB001",
+// "USB002", etc. regardless of what the queue is called. Brand-name matching
+// alone is unreliable because the queue name can be anything.
 // _send_escpos routes non-device-path strings to _send_raw_windows_printer.
 #[cfg(target_os = "windows")]
 fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
+    use std::collections::HashSet;
     use std::process::Command;
-    let script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { $_.Name }"#;
+    // Emit "QueueName|PortName" for every installed printer
+    let script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.PortName)" }"#;
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", script])
         .output()
@@ -711,15 +715,33 @@ fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut printers = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for line in stdout.lines() {
-        let name = line.trim().to_string();
-        if name.is_empty() || !_is_receipt_printer_name(&name) {
+        let parts: Vec<&str> = line.splitn(2, '|').collect();
+        if parts.len() < 2 {
             continue;
         }
-        printers.push(EscposPrinterInfo {
-            path: name.clone(),
-            description: format!("Windows Printer Queue — {name}"),
-        });
+        let name = parts[0].trim().to_string();
+        let port = parts[1].trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        // Accept printers on USB ports (USB001, USB002 …) OR with a receipt-brand name.
+        // The port check is hardware-level and catches any USB printer regardless of
+        // what the user or installer named the queue.
+        let on_usb = port.to_uppercase().starts_with("USB");
+        if !on_usb && !_is_receipt_printer_name(&name) {
+            continue;
+        }
+        if !seen.insert(name.to_lowercase()) {
+            continue;
+        }
+        let description = if on_usb {
+            format!("USB Printer — {name} (port: {port})")
+        } else {
+            format!("Windows Printer Queue — {name}")
+        };
+        printers.push(EscposPrinterInfo { path: name, description });
     }
     Ok(printers)
 }
