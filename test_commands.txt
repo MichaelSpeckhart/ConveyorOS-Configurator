@@ -4,4 +4,10 @@ Get-CimInstance Win32_PnPEntity |
   Where-Object { $_.Name -match "Epson|TM-T88|Receipt|Printer" } |
   Select-Object Name, DeviceID, Manufacturer
 
-  
+  PS C:\Users\White> Get-CimInstance Win32_PnPEntity |
+>>   Where-Object { $_.Name -match "Epson|TM-T88|Receipt|Printer" } |
+>>   Select-Object Name, DeviceID, Manufacturer
+
+Name      DeviceID                                 Manufacturer
+----      --------                                 ------------
+TM-T88VII USB\VID_04B8&PID_0202\5839584C2851870000
