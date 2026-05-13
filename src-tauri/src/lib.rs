@@ -696,54 +696,89 @@ fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
     Ok(printers)
 }
 
-// Windows: libusb/rusb cannot enumerate printers managed by the Windows printer
-// subsystem (Epson APD uses a Windows driver, not WinUSB). Query Win32_Printer
-// and filter by PortName — USB-connected printers get ports named "USB001",
-// "USB002", etc. regardless of what the queue is called. Brand-name matching
-// alone is unreliable because the queue name can be anything.
-// _send_escpos routes non-device-path strings to _send_raw_windows_printer.
+// Windows: two-pass detection.
+//
+// Pass 1 — Win32_Printer: printers with Windows drivers (Epson APD, etc.).
+// USB-connected queues have PortName "USB001", "USB002", etc. These are sent
+// via _send_raw_windows_printer (winspool RAW). No Zadig/WinUSB needed.
+//
+// Pass 2 — Win32_PnPEntity: raw USB devices with known receipt-printer VIDs.
+// These appear here when no Windows printer driver is installed. The path is
+// returned as "VID:PID" hex (e.g. "04b8:0202") so _send_escpos routes them
+// through rusb/libusb. Requires the WinUSB or libusbK driver — install via
+// Zadig (https://zadig.akeo.ie) before use.
 #[cfg(target_os = "windows")]
 fn _discover_escpos_printers_impl() -> Result<Vec<EscposPrinterInfo>, String> {
     use std::collections::HashSet;
     use std::process::Command;
-    // Emit "QueueName|PortName" for every installed printer
-    let script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.PortName)" }"#;
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .map_err(|e| format!("Failed to query printers: {e}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut printers = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        if parts.len() < 2 {
-            continue;
+
+    // Pass 1: Windows printer queues (driver installed).
+    let printer_script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.PortName)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", printer_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.len() < 2 { continue; }
+            let name = parts[0].trim().to_string();
+            let port = parts[1].trim().to_string();
+            if name.is_empty() { continue; }
+            let on_usb = port.to_uppercase().starts_with("USB");
+            if !on_usb && !_is_receipt_printer_name(&name) { continue; }
+            if !seen.insert(name.to_lowercase()) { continue; }
+            let description = if on_usb {
+                format!("USB Printer — {name} (port: {port})")
+            } else {
+                format!("Windows Printer Queue — {name}")
+            };
+            printers.push(EscposPrinterInfo { path: name, description });
         }
-        let name = parts[0].trim().to_string();
-        let port = parts[1].trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        // Accept printers on USB ports (USB001, USB002 …) OR with a receipt-brand name.
-        // The port check is hardware-level and catches any USB printer regardless of
-        // what the user or installer named the queue.
-        let on_usb = port.to_uppercase().starts_with("USB");
-        if !on_usb && !_is_receipt_printer_name(&name) {
-            continue;
-        }
-        if !seen.insert(name.to_lowercase()) {
-            continue;
-        }
-        let description = if on_usb {
-            format!("USB Printer — {name} (port: {port})")
-        } else {
-            format!("Windows Printer Queue — {name}")
-        };
-        printers.push(EscposPrinterInfo { path: name, description });
     }
+
+    // Pass 2: raw USB devices by known receipt-printer VID (no Windows driver).
+    let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.DeviceID -match 'VID_04B8|VID_0519|VID_1504|VID_1D90|VID_0DD4|VID_0FE6' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", pnp_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.len() < 2 { continue; }
+            let name = parts[0].trim().to_string();
+            let device_id = parts[1].trim();
+            if name.is_empty() { continue; }
+            let (vid, pid) = match _parse_vid_pid_from_device_id(device_id) {
+                Some(v) => v,
+                None => continue,
+            };
+            let path = format!("{:04x}:{:04x}", vid, pid);
+            if !seen.insert(path.clone()) { continue; }
+            let description = format!("{name} — {path} (WinUSB driver required)");
+            printers.push(EscposPrinterInfo { path, description });
+        }
+    }
+
     Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
+fn _parse_vid_pid_from_device_id(device_id: &str) -> Option<(u16, u16)> {
+    // DeviceID format: USB\VID_04B8&PID_0202\5839584C2851870000
+    let upper = device_id.to_uppercase();
+    let vid_pos = upper.find("VID_")? + 4;
+    let pid_pos = upper.find("PID_")? + 4;
+    if vid_pos + 4 > device_id.len() || pid_pos + 4 > device_id.len() {
+        return None;
+    }
+    let vid = u16::from_str_radix(&device_id[vid_pos..vid_pos + 4], 16).ok()?;
+    let pid = u16::from_str_radix(&device_id[pid_pos..pid_pos + 4], 16).ok()?;
+    Some((vid, pid))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
